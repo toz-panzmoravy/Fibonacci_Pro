@@ -1,0 +1,198 @@
+//@version=6
+indicator("Auto Fib Retracement se Signály", overlay=true)
+
+// Základní nastavení
+devTooltip = "Odchylka je násobitel, který ovlivňuje, jak moc se musí cena odchýlit od předchozího pivotu, aby se stal novým pivotem."
+depthTooltip = "Minimální počet svíček, které budou zohledněny při výpočtu indikátoru."
+
+// Nastavení pivotů
+threshold_multiplier = input.float(title="Odchylka", defval=3, minval=0, tooltip=devTooltip)
+depth = input.int(title="Hloubka", defval=10, minval=2, tooltip=depthTooltip)
+reverse = input(false, "Obráceně", display = display.data_window)
+
+// Nastavení rozšíření
+var extendLeft = input(false, "Rozšířit vlevo    |    Rozšířit vpravo", inline = "Rozšíření")
+var extendRight = input(true, "", inline = "Rozšíření")
+var extending = extend.none
+if extendLeft and extendRight
+    extending := extend.both
+if extendLeft and not extendRight
+    extending := extend.left
+if not extendLeft and extendRight
+    extending := extend.right
+
+// Nastavení zobrazení
+prices = input(true, "Zobrazit ceny", display = display.data_window)
+levels = input(true, "Zobrazit úrovně", inline = "Úrovně", display = display.data_window)
+levelsFormat = input.string("Hodnoty", "", options = ["Hodnoty", "Procenta"], inline = "Úrovně", display = display.data_window)
+labelsPosition = input.string("Vlevo", "Pozice popisků", options = ["Vlevo", "Vpravo"], display = display.data_window)
+var int backgroundTransparency = input.int(85, "Průhlednost pozadí", minval = 0, maxval = 100, display = display.data_window)
+
+// Nastavení signálů
+signalLookback = input.int(3, "Období zpětného pohledu", minval=1, maxval=10, group="Nastavení signálů")
+useVolume = input.bool(true, "Použít potvrzení objemem", group="Nastavení signálů")
+minVolumeMultiplier = input.float(1.5, "Minimální násobitel objemu", minval=1.0, group="Nastavení signálů")
+
+// Import ZigZag
+import TradingView/ZigZag/7 as zigzag
+
+// Funkce pro aktualizaci
+update()=>
+    var settings = zigzag.Settings.new(threshold_multiplier, depth, color(na), false, false, false, false, "Absolute", true)
+    var zigzag.ZigZag zigZag = zigzag.newInstance(settings)
+    var zigzag.Pivot lastP = na
+    var float startPrice = na
+    var float height = na
+    if barstate.islast and zigZag.pivots.size() < 2
+        runtime.error("Nedostatek dat pro výpočet Auto Fib Retracement na aktuálním symbolu. Změňte časový rámec grafu na nižší nebo vyberte menší hloubku výpočtu pomocí nastavení indikátoru 'Hloubka'.")
+    settings.devThreshold := ta.atr(10) / close * 100 * threshold_multiplier
+    if zigZag.update()
+        lastP := zigZag.lastPivot()
+        if not na(lastP)
+            var line lineLast = na
+            if na(lineLast)
+                lineLast := line.new(lastP.start, lastP.end, xloc=xloc.bar_time, color=color.gray, width=1, style=line.style_dashed)
+            else
+                line.set_first_point(lineLast, lastP.start)
+                line.set_second_point(lineLast, lastP.end)
+
+            startPrice := reverse ? lastP.start.price : lastP.end.price
+            endPrice = reverse ? lastP.end.price : lastP.start.price
+            height := (startPrice > endPrice ? -1 : 1) * math.abs(startPrice - endPrice)
+    [lastP, startPrice, height]
+
+[lastP, startPrice, height] = update()
+
+// Funkce pro vykreslení čar a popisků
+_draw_line(price, col) =>
+    var id = line.new(lastP.start.time, lastP.start.price, time, price, xloc=xloc.bar_time, color=col, width=1, extend=extending)
+    line.set_xy1(id, lastP.start.time, price)
+    line.set_xy2(id, lastP.end.time, price)
+    id
+
+_draw_label(price, txt, txtColor) =>
+    x = labelsPosition == "Vlevo" ? lastP.start.time : not extendRight ? lastP.end.time : time
+    labelStyle = labelsPosition == "Vlevo" ? label.style_label_right : label.style_label_left
+    align = labelsPosition == "Vlevo" ? text.align_right : text.align_left
+    labelsAlignStrLeft = txt + '\n ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏ \n'
+    labelsAlignStrRight = '       ' + txt + '\n ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏  ‏ \n'
+    labelsAlignStr = labelsPosition == "Vlevo" ? labelsAlignStrLeft : labelsAlignStrRight
+    var id = label.new(x=x, y=price, xloc=xloc.bar_time, text=labelsAlignStr, textcolor=txtColor, style=labelStyle, textalign=align, color=#00000000)
+    label.set_xy(id, x, price)
+    label.set_text(id, labelsAlignStr)
+    label.set_textcolor(id, txtColor)
+
+// Funkce pro zpracování úrovní
+_wrap(txt) =>
+    "(" + str.tostring(txt, format.mintick) + ")"
+
+_label_txt(level, price) =>
+    l = levelsFormat == "Hodnoty" ? str.tostring(level) : str.tostring(level * 100) + "%"
+    (levels ? l : "") + (prices ? _wrap(price) : "")
+
+_crossing_level(series float sr, series float r) =>
+    (r > sr and r < sr[1]) or (r < sr and r > sr[1])
+
+processLevel(bool show, float value, color colorL, line lineIdOther) =>
+    float m = value
+    r = startPrice + height * m
+    crossed = _crossing_level(close, r)
+    if show and not na(lastP)
+        lineId = _draw_line(r, colorL)
+        _draw_label(r, _label_txt(m, r), colorL)
+        if crossed
+            alert("Autofib: " + syminfo.ticker + " překročil úroveň " + str.tostring(value))
+        if not na(lineIdOther)
+            linefill.new(lineId, lineIdOther, color = color.new(colorL, backgroundTransparency))
+        lineId
+    else
+        lineIdOther
+
+// Nastavení Fibonacci úrovní
+show_0 = input(true, "", inline = "Úroveň0", display = display.data_window)
+value_0 = input(0, "", inline = "Úroveň0", display = display.data_window)
+color_0 = input(#787b86, "", inline = "Úroveň0", display = display.data_window)
+
+show_0_236 = input(true, "", inline = "Úroveň0", display = display.data_window)
+value_0_236 = input(0.236, "", inline = "Úroveň0", display = display.data_window)
+color_0_236 = input(#f44336, "", inline = "Úroveň0", display = display.data_window)
+
+show_0_382 = input(true, "", inline = "Úroveň1", display = display.data_window)
+value_0_382 = input(0.382, "", inline = "Úroveň1", display = display.data_window)
+color_0_382 = input(#81c784, "", inline = "Úroveň1", display = display.data_window)
+
+show_0_5 = input(true, "", inline = "Úroveň1", display = display.data_window)
+value_0_5 = input(0.5, "", inline = "Úroveň1", display = display.data_window)
+color_0_5 = input(#4caf50, "", inline = "Úroveň1", display = display.data_window)
+
+show_0_618 = input(true, "", inline = "Úroveň2", display = display.data_window)
+value_0_618 = input(0.618, "", inline = "Úroveň2", display = display.data_window)
+color_0_618 = input(#009688, "", inline = "Úroveň2", display = display.data_window)
+
+show_0_786 = input(true, "", inline = "Úroveň3", display = display.data_window)
+value_0_786 = input(0.786, "", inline = "Úroveň3", display = display.data_window)
+color_0_786 = input(#64b5f6, "", inline = "Úroveň3", display = display.data_window)
+
+show_1 = input(true, "", inline = "Úroveň3", display = display.data_window)
+value_1 = input(1, "", inline = "Úroveň3", display = display.data_window)
+color_1 = input(#787b86, "", inline = "Úroveň3", display = display.data_window)
+
+show_1_618 = input(true, "", inline = "Úroveň4", display = display.data_window)
+value_1_618 = input(1.618, "", inline = "Úroveň4", display = display.data_window)
+color_1_618 = input(#2962ff, "", inline = "Úroveň4", display = display.data_window)
+
+show_2_618 = input(true, "", inline = "Úroveň5", display = display.data_window)
+value_2_618 = input(2.618, "", inline = "Úroveň5", display = display.data_window)
+color_2_618 = input(#f44336, "", inline = "Úroveň5", display = display.data_window)
+
+// Výpočty mimo podmínky
+atr14 = ta.atr(14)
+atr10 = ta.atr(10)
+smaVol20 = ta.sma(volume, 20)
+isStrong = volume > smaVol20 * minVolumeMultiplier
+
+fib0618 = startPrice + height * 0.618
+fib0786 = startPrice + height * 0.786
+fib1618 = startPrice + height * 1.618
+fib2618 = startPrice + height * 2.618
+
+// Nákupní signál: cena překročí 0.618 nebo 0.786 směrem nahoru, býčí svíčka, objem OK
+bool buySignal = false
+if show_0_618 and show_0_786
+    crossUp0618 = ta.crossover(close, fib0618)
+    crossUp0786 = ta.crossover(close, fib0786)
+    bullishCandle = close > open
+    buySignal := (crossUp0618 or crossUp0786) and bullishCandle and (not useVolume or isStrong)
+
+// Prodejní signál: cena překročí 1.618 nebo 2.618 směrem dolů, medvědí svíčka, objem OK
+bool sellSignal = false
+if show_1_618 and show_2_618
+    crossDown1618 = ta.crossunder(close, fib1618)
+    crossDown2618 = ta.crossunder(close, fib2618)
+    bearishCandle = close < open
+    sellSignal := (crossDown1618 or crossDown2618) and bearishCandle and (not useVolume or isStrong)
+
+// Vykreslení signálů
+plotshape(buySignal, title="Nákupní signál", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
+plotshape(sellSignal, title="Prodejní signál", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)
+
+// Vykreslení labelů nad/pod šipky
+if buySignal
+    label.new(bar_index, low, "BUY", color=color.new(color.green, 0), style=label.style_label_up, textcolor=color.white, size=size.normal, yloc=yloc.belowbar)
+if sellSignal
+    label.new(bar_index, high, "SELL", color=color.new(color.red, 0), style=label.style_label_down, textcolor=color.white, size=size.normal, yloc=yloc.abovebar)
+
+// Nastavení upozornění
+alertcondition(buySignal, "Nákupní signál", "Fibonacci nákupní signál vygenerován")
+alertcondition(sellSignal, "Prodejní signál", "Fibonacci prodejní signál vygenerován")
+
+// Vykreslení Fibonacci úrovní
+lineId0 = processLevel(show_0, value_0, color_0, line(na))
+lineId1 = processLevel(show_0_236, value_0_236, color_0_236, lineId0)
+lineId2 = processLevel(show_0_382, value_0_382, color_0_382, lineId1)
+lineId3 = processLevel(show_0_5, value_0_5, color_0_5, lineId2)
+lineId4 = processLevel(show_0_618, value_0_618, color_0_618, lineId3)
+lineId5 = processLevel(show_0_786, value_0_786, color_0_786, lineId4)
+lineId6 = processLevel(show_1, value_1, color_1, lineId5)
+lineId7 = processLevel(show_1_618, value_1_618, color_1_618, lineId6)
+lineId8 = processLevel(show_2_618, value_2_618, color_2_618, lineId7) 
